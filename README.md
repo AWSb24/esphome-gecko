@@ -492,6 +492,30 @@ Notes from bus captures on this pack, where the in.touch 2 was the only other co
 - The in.touch drove filtration and economy remotely (`FilterAccess`/`EconomyAccess` = REMOTE at 0x0106, starting runs with `RemoteFiltAction`/`RemoteEconAction`). Check the `Filtration` sensor after removing the in.touch to confirm filter runs still start.
 - Temperature units: position 0x0021, `00` = °F, `01` = °C.
 
+### WT32-ETH01 with ATV32 drives on the pumps
+
+[`esphome/spa-controller-wt32-eth01-atv32.yaml`](esphome/spa-controller-wt32-eth01-atv32.yaml) runs the same in.YE-5 setup on a WT32-ETH01 (wired Ethernet, LAN8720). It also drives the three pumps through Schneider Altivar 32 frequency drives over Modbus RTU, which gives them a soft start and stop and an adjustable speed. The wiring and drive settings are in the file header.
+
+| WT32-ETH01 | Goes to |
+|---|---|
+| IO4 / IO32 | ISO1540 SDA1 / SCL1 |
+| IO17 / IO5 / IO33 | RS485 transceiver DI / RO / DE+RE |
+
+Each pump comes from [`esphome/packages/atv32-pump.yaml`](esphome/packages/atv32-pump.yaml), included once per drive with its pump number and Modbus address. The spa pack stays in charge:
+
+- **Start:** when the pack switches a pump on (from the panel, Home Assistant, filtration or heating), the drive gets the speed from `Pumpe N Drehzahl` and starts on its ACC ramp.
+- **Stop:** when the pack switches the pump off, the drive stops on its dEC ramp.
+- **Resync:** a 10 s check repeats a lost start or stop.
+- **Fail-safe:** if the ESP32 stops talking, the drive's Modbus timeout (ttO) trips and the pump stops.
+- **Entities per pump:** output frequency, motor current, fault flag, last fault code, and a fault-reset button.
+
+Before wiring this up:
+
+- **Motors.** The ATV32 has a three-phase output. Most spa pumps have single-phase capacitor motors, and those must not run on a drive. Use three-phase motors (230 V delta for a single-phase-input ATV32 ...M2).
+- **Power path.** Each drive needs permanent mains, with the motor on its output. The pack's pump relay no longer feeds the motor; never switch a drive's input or output with a relay to run the pump.
+- **RCD.** Drives leak DC fault current, so the spa circuit needs a type B (or F) 30 mA RCD. Have an electrician do the mains side.
+- **Registers.** The registers used are CMD 8501, LFR 8502, ETA 3201, RFR 3202, LCR 3204 and LFT 7121. Check them against the ATV32 communication parameters for your firmware.
+
 ---
 
 ## I2C Protocol
