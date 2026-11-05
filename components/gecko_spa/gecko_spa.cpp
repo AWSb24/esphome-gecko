@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cinttypes>
 #include <cmath>
+#include <cstdlib>
 #include <ctime>
 
 namespace esphome {
@@ -68,6 +69,9 @@ void GeckoSpa::loop() {
   }
 
   this->update_quiet_time_();
+#ifdef USE_GECKO_SPA_CLOCK_SYNC
+  this->update_clock_sync_();
+#endif
 
   // Send GO keep-alive every 23 seconds (triggers handshake sequence)
   if (millis() - last_go_send_time_ > 23000) {
@@ -329,6 +333,9 @@ void GeckoSpa::process_i2c_message(const uint8_t *data, uint8_t len) {
     }
 
     send_i2c_message(ACK_MESSAGE, 15);
+#ifdef USE_GECKO_SPA_CLOCK_SYNC
+    this->check_clock_drift_(hour, minute, second);
+#endif
     return;
   }
 
@@ -743,6 +750,8 @@ void GeckoSpa::parse_status_message(const uint8_t *data) {
     if (lock_mode_sensor_) {
       lock_mode_sensor_->publish_state(lockMode < 3 ? lock_str[lockMode] : "?");
     }
+    if (lock_select_ && lockMode < 3)
+      lock_select_->publish_state(lock_str[lockMode]);
   }
 
   // Update PackType sensor
@@ -899,6 +908,79 @@ void GeckoSpa::write_value_(uint16_t position, uint8_t value) {
   cmd[19] = calc_checksum(cmd, 20);
   send_i2c_message(cmd, 20);
 }
+
+void GeckoSpa::send_lock_command(uint8_t mode) {
+  if (mode > 2)
+    return;
+  ESP_LOGI(TAG, "Setting keypad lock to %u", mode);
+  this->write_value_(log_offsets_->lockMode, mode);
+}
+
+#ifdef USE_GECKO_SPA_CLOCK_SYNC
+void GeckoSpa::sync_clock() {
+  if (sync_clock_ == nullptr)
+    return;
+  auto now = sync_clock_->now();
+  if (!now.is_valid()) {
+    ESP_LOGW(TAG, "Clock sync skipped: time source has no valid time yet");
+    return;
+  }
+  if (!connected_) {
+    ESP_LOGW(TAG, "Clock sync skipped: spa not connected");
+    return;
+  }
+  // 'K' set-clock command, as the in.touch sends it (format from the LDWTH
+  // fork): 4B YY MM DD DoW HH MM SS, day of week 0 = Sunday.
+  // TODO: verify the date byte order against a capture of an in.touch
+  // reconnect on an in.YE-5 (C65/S66); the pack's own 'K' message is parsed
+  // as [15]=day [16]=month.
+  uint8_t dow = now.day_of_week >= 1 ? now.day_of_week - 1 : 0;  // ESPHome: 1 = Sunday
+  uint8_t cmd[22] = {0x17, 0x0A, 0x00, 0x00, 0x00, 0x17, 0x09, 0x00, 0x00, 0x00, 0x00,
+                     0x00, 0x08, 0x4B, (uint8_t) (now.year % 100), now.month, now.day_of_month,
+                     dow, now.hour, now.minute, now.second, 0x00};
+  cmd[21] = calc_checksum(cmd, 22);
+  send_i2c_message(cmd, 22);
+  last_clock_sync_ = millis();
+  clock_synced_once_ = true;
+  ESP_LOGI(TAG, "Spa clock set to 20%02u-%02u-%02u %02u:%02u:%02u", now.year % 100, now.month, now.day_of_month,
+           now.hour, now.minute, now.second);
+}
+
+void GeckoSpa::check_clock_drift_(uint8_t hour, uint8_t minute, uint8_t second) {
+  if (sync_clock_ == nullptr || hour > 23 || minute > 59 || second > 59)
+    return;
+  auto now = sync_clock_->now();
+  if (!now.is_valid())
+    return;
+  int32_t spa_s = hour * 3600 + minute * 60 + second;
+  int32_t our_s = now.hour * 3600 + now.minute * 60 + now.second;
+  int32_t drift = spa_s - our_s;
+  // Wrap around midnight: the shortest way round the clock face
+  if (drift > 43200)
+    drift -= 86400;
+  if (drift < -43200)
+    drift += 86400;
+  ESP_LOGD(TAG, "Spa clock drift: %d s", (int) drift);
+  if ((uint32_t) abs(drift) > clock_max_drift_s_ &&
+      (!clock_synced_once_ || millis() - last_clock_sync_ > CLOCK_MIN_GAP_MS)) {
+    ESP_LOGI(TAG, "Spa clock is %d s off, setting it", (int) drift);
+    this->sync_clock();
+  }
+}
+
+void GeckoSpa::update_clock_sync_() {
+  if (sync_clock_ == nullptr || !connected_)
+    return;
+  if (clock_synced_once_ && millis() - last_clock_sync_ < CLOCK_RESYNC_MS)
+    return;
+  // First sync after boot waits for a valid time; then once a day
+  if (!sync_clock_->now().is_valid())
+    return;
+  if (!clock_synced_once_ && millis() - last_clock_sync_ < 60000)
+    return;  // Retry at most once a minute until the first one goes out
+  this->sync_clock();
+}
+#endif
 
 void GeckoSpa::pause_quiet_time(uint32_t minutes) {
   if (!quiet_configured_) {
@@ -1268,6 +1350,21 @@ void GeckoSpaSelect::control(const std::string &value) {
 
   parent_->send_program_command(prog);
   this->publish_state(value);
+}
+
+void GeckoSpaLockSelect::control(const std::string &value) {
+  uint8_t mode;
+  if (value == "UNLOCK")
+    mode = 0;
+  else if (value == "PARTIAL")
+    mode = 1;
+  else if (value == "FULL")
+    mode = 2;
+  else
+    return;
+  parent_->send_lock_command(mode);
+  // No publish here: the next status message confirms the change
+  // (and puts the select back if the spa ignored it).
 }
 
 }  // namespace gecko_spa

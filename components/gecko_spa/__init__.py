@@ -39,6 +39,8 @@ CONF_I2C_BUS = "i2c_bus"
 CONF_NOTIF_DATE_FORMAT = "notif_date_format"
 CONF_UART_TRANSPORT_ID = "uart_transport_id"
 CONF_QUIET_TIME = "quiet_time"
+CONF_CLOCK_SYNC = "clock_sync"
+CONF_MAX_DRIFT = "max_drift"
 CONF_START = "start"
 CONF_END = "end"
 CONF_MIN_WATER_TEMPERATURE = "min_water_temperature"
@@ -84,6 +86,19 @@ QUIET_TIME_SCHEMA = cv.All(
         }
     ),
     _validate_quiet_time,
+)
+
+
+# Set the spa's clock from an ESPHome time source (e.g. SNTP or Home
+# Assistant). Without the in.touch nothing else keeps it right.
+CLOCK_SYNC_SCHEMA = cv.Schema(
+    {
+        cv.GenerateID(CONF_TIME_ID): cv.use_id(time_.RealTimeClock),
+        cv.Optional(CONF_MAX_DRIFT, default="2min"): cv.All(
+            cv.positive_time_period_seconds,
+            cv.Range(min=cv.TimePeriod(seconds=10)),
+        ),
+    }
 )
 
 
@@ -184,6 +199,7 @@ CONFIG_SCHEMA = cv.All(
                 ),
             ),
             cv.Optional(CONF_QUIET_TIME): QUIET_TIME_SCHEMA,
+            cv.Optional(CONF_CLOCK_SYNC): CLOCK_SYNC_SCHEMA,
         }
     ).extend(cv.COMPONENT_SCHEMA),
     _validate_transport,
@@ -247,3 +263,8 @@ async def to_code(config):
                 quiet[CONF_MIN_WATER_TEMPERATURE],
             )
         )
+
+    if sync := config.get(CONF_CLOCK_SYNC):
+        cg.add_define("USE_GECKO_SPA_CLOCK_SYNC")
+        clock = await cg.get_variable(sync[CONF_TIME_ID])
+        cg.add(var.set_clock_sync(clock, sync[CONF_MAX_DRIFT].total_seconds))

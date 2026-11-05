@@ -314,6 +314,7 @@ Direct I2C works on any ESP32, with either framework. These example configs comp
 | `min_temperature` | `26°C` | Lowest setpoint Home Assistant will offer and send, down to `10°C` |
 | `max_temperature` | `40°C` | Highest setpoint Home Assistant will offer and send, up to `41.1°C` (106 °F). Gecko panels only go above 40 °C by holding the up key |
 | `quiet_time` | - | Hold the pumps off every night - see [Quiet time](#quiet-time) |
+| `clock_sync` | - | Keep the spa's clock set from an ESPHome time source - see [Clock sync](#clock-sync) |
 | `uart_id` | - | Legacy Arduino proxy mode. Mutually exclusive with `sda`/`scl` |
 | `reset_pin` | - | Legacy Arduino proxy mode only - the GPIO wired to the Arduino's RST pin |
 
@@ -337,6 +338,8 @@ The `Transport:` line in the boot log says which one is running. On a XIAO ESP32
 | `id(spa).reset_arduino()` | Alias of `recover_link()`, kept so older configs keep working |
 | `id(spa).pause_quiet_time(120)` | Let the pumps run for the next 120 minutes even inside quiet time; `0` resumes quiet time now |
 | `id(spa).start_quiet_time(120)` | Start quiet time now, outside the window too, for the next 120 minutes (a run that reaches the window carries on into it); `0` goes back to the schedule |
+| `id(spa).sync_clock()` | Set the spa's clock from the `clock_sync` time source now |
+| `id(spa).send_lock_command(1)` | Keypad lock: `0` unlocked, `1` partial, `2` full |
 | `id(spa).hold_standby(15)` | Hold the spa in standby for the next 15 minutes, whatever the time; call again to extend, `0` releases - see [Standby hold](#standby-hold) |
 
 ### Quiet time
@@ -437,6 +440,57 @@ binary_sensor:
 ```
 
 These read fields that sit at the same positions in every inYT status version from 51 through 83.
+
+### Clock sync
+
+The in.touch sets the spa's clock whenever it connects. Without it the clock drifts, and the spa's own filter and economy schedules run on that clock. `clock_sync` takes over:
+
+```yaml
+time:
+  - platform: sntp          # or homeassistant
+    id: spa_clock
+    timezone: Europe/Berlin
+
+gecko_spa:
+  # ...
+  clock_sync:
+    time_id: spa_clock
+    max_drift: 2min         # default; minimum 10s
+```
+
+The spa reports its clock in the 'K' message during each handshake. If that is more than `max_drift` off the time source, the component sets it (at most once per 10 minutes), and it sets it once a day regardless. The command is `4B YY MM DD DoW HH MM SS` (day of week 0 = Sunday), taken from the LDWTH fork. The date byte order has not yet been checked against an in.touch capture on an in.YE-5, so check the `Spa Time` text sensor after the first sync.
+
+### Keypad lock
+
+```yaml
+select:
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: lock              # UNLOCK / PARTIAL / FULL
+    name: "Spa Keypad Lock"
+```
+
+Writes geckolib's `LockMode` (position 0x0136 on status v51+). The select follows the spa's status, so it snaps back if the spa ignores the change. `type: program` (the default) is the water-care program select.
+
+### in.YE-5 with an ISO1540 isolator
+
+[`esphome/spa-controller-in-ye-5-iso1540.yaml`](esphome/spa-controller-in-ye-5-iso1540.yaml) is a full config for an in.YE-5-H3.0 (config 65, status 66) on an ESP32 DevKit, isolated from the spa with an ISO1540 instead of a level converter. Wiring:
+
+| CO port pin | Signal | ISO1540 (side 2) |
+|---|---|---|
+| 8 | GND | GND2 |
+| 4 | 5V | VCC2 |
+| 3 | SDA | SDA2 |
+| 2 | SCL | SCL2 |
+| 6 | 12V | not used |
+
+ESP32 3V3/GND/GPIO21/GPIO22 go to VCC1/GND1/SDA1/SCL1, with 4.7k pull-ups to 3V3 on side 1 if the module has none. Use the ISO1540, not the ISO1541: the ISO1541's SCL is one-way, and the ESP32 drives SCL when it sends commands. Power the ESP32 from its own USB supply so nothing bridges the isolation.
+
+Notes from bus captures on this pack, where the in.touch 2 was the only other controller:
+
+- The I2C payloads are geckolib's SPACK payloads. KEY_PRESS (`39 kk`) and SET_VALUE (`46 cfg log pos16 data`) both appear, with positions matching geckolib's `inyt-cfg-65` / `inyt-log-66`.
+- The in.touch drove filtration and economy remotely (`FilterAccess`/`EconomyAccess` = REMOTE at 0x0106, starting runs with `RemoteFiltAction`/`RemoteEconAction`). Check the `Filtration` sensor after removing the in.touch to confirm filter runs still start.
+- Temperature units: position 0x0021, `00` = °F, `01` = °C.
 
 ---
 
