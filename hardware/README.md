@@ -41,9 +41,12 @@ Pin use matches the ESPHome config: I2C SDA IO4, SCL IO32; RS485 TX IO17, RX IO5
 The schematic, layout and routing are generated from [`tools/parts.py`](tools/parts.py), so a change there (a part, a net, a position) rebuilds everything consistently. Needs KiCad 7 and numpy:
 
 ```sh
-python3 hardware/tools/gen_sch.py   # schematic + symbol library
+python3 hardware/tools/gen_sch.py   # schematic (drawn wires, power symbols) + symbol library
+python3 hardware/tools/check_sch.py # compares KiCad's netlist of the schematic with parts.py
 python3 hardware/tools/gen_pcb.py   # footprints, nets, outline, keep-outs, pours
 python3 hardware/tools/route.py     # grid router, pour fill, DRC report
 ```
+
+The schematic placement and wiring live in `SCH` and `draw()` in `gen_sch.py`; the nets themselves only come from `parts.py`, and `check_sch.py` fails if the drawing connects anything differently.
 
 You can also edit the KiCad files directly. Once you do, stop using the scripts, or they will overwrite your changes.
