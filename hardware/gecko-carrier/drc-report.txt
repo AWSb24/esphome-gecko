@@ -1,0 +1,10 @@
+** Drc report for /home/claude/esphome-gecko/hardware/tools/../gecko-carrier/gecko-carrier.kicad_pcb **
+** Created on 2026-11-08 18:08:25 **
+
+** Found 0 DRC violations **
+
+** Found 0 unconnected pads **
+
+** Found 0 Footprint errors **
+
+** End of Report **

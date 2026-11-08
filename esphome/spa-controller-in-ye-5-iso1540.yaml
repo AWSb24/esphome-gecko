@@ -1,0 +1,222 @@
+# Gecko in.YE-5 (tested pack: in.YE-5-H3.0, config 65 / status 66) with an
+# ESP32 DevKit wired to the spa's CO port through an ISO1540 I2C isolator.
+# Replaces the in.touch 2 CO module (unplug it - only one controller on the
+# CO port).
+#
+# CO port (2x4, 2.54 mm; pin numbers as on pictures/spa_pinouts.png):
+#   pin 8  GND   -> ISO1540 GND2
+#   pin 4  5V    -> ISO1540 VCC2   (spa side; the isolator draws a few mA)
+#   pin 3  SDA   -> ISO1540 SDA2
+#   pin 2  SCL   -> ISO1540 SCL2
+#   pin 6  12V   -> not used
+#
+# ESP32 side:
+#   3V3    -> ISO1540 VCC1
+#   GND    -> ISO1540 GND1
+#   GPIO21 -> ISO1540 SDA1  (+ 4.7k pull-up to 3V3 if the board has none)
+#   GPIO22 -> ISO1540 SCL1  (+ 4.7k pull-up to 3V3 if the board has none)
+#
+# Use an ISO1540 (bidirectional SCL), not an ISO1541: the ESP32 has to drive
+# SCL when it sends commands. Power the ESP32 from its own USB supply so the
+# isolation is not bridged by a shared ground.
+
+substitutions:
+  device_name: spa-controller
+
+esphome:
+  name: ${device_name}
+  friendly_name: Whirlpool
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+logger:
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "Spa Controller Fallback"
+    password: !secret ap_password
+
+captive_portal:
+
+# Time for clock sync and the reminder countdowns. SNTP works without Home
+# Assistant; swap for "platform: homeassistant" if you prefer.
+time:
+  - platform: sntp
+    id: spa_clock
+    timezone: Europe/Berlin
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+  # Or straight from GitHub:
+  # - source: github://AWSb24/esphome-gecko@in-ye-5-support
+  #   components: [gecko_spa]
+
+gecko_spa:
+  id: spa
+  sda: GPIO21
+  scl: GPIO22
+  notif_date_format: Y-M-D  # Swap to D-M-Y if reminder dates look wrong
+  min_temperature: 15
+  max_temperature: 40
+  # With the in.touch gone nothing sets the spa's clock any more.
+  clock_sync:
+    time_id: spa_clock
+    max_drift: 2min
+
+climate:
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    name: "Whirlpool"
+
+switch:
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: light
+    name: "Licht"
+    icon: "mdi:lightbulb"
+
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: pump1
+    name: "Pumpe 1"
+    icon: "mdi:pump"
+
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: pump2
+    name: "Pumpe 2"
+    icon: "mdi:pump"
+
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: pump3
+    name: "Pumpe 3"
+    icon: "mdi:pump"
+
+  # Untested on the in.YE-5: remove if it does nothing
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: circulation
+    name: "Umwälzpumpe"
+    icon: "mdi:rotate-3d-variant"
+
+select:
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: lock
+    name: "Tastensperre"
+
+binary_sensor:
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: connected
+    name: "Verbunden"
+    device_class: connectivity
+
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: standby
+    name: "Standby"
+
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: waterfall
+    name: "Wasserfall"
+    icon: "mdi:waterfall"
+
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: economy
+    name: "Sparmodus aktiv"
+
+sensor:
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: pump_timer
+    name: "Pumpen-Timer"
+
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: filter_time_left
+    name: "Filterlauf Restzeit"
+
+  - platform: wifi_signal
+    name: "WLAN Signal"
+    update_interval: 60s
+
+text_sensor:
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: spa_time
+    name: "Uhrzeit Spa"
+
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: filtration
+    name: "Filtration"
+
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: rinse_filter
+    name: "Filter spülen fällig"
+
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: clean_filter
+    name: "Filter reinigen fällig"
+
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: change_water
+    name: "Wasserwechsel fällig"
+
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: spa_checkup
+    name: "Spa Service fällig"
+
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: config_version
+    name: "Config-Version"
+
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: status_version
+    name: "Status-Version"
+
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: pack_type
+    name: "Pack-Typ"
+
+button:
+  - platform: template
+    name: "Status aktualisieren"
+    on_press:
+      - lambda: id(spa).request_status();
+
+  - platform: template
+    name: "Uhr jetzt stellen"
+    on_press:
+      - lambda: id(spa).sync_clock();
+
+  - platform: template
+    name: "Bus neu verbinden"
+    on_press:
+      - lambda: id(spa).recover_link();

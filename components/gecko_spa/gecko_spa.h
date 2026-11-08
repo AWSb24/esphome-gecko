@@ -12,7 +12,7 @@
 #include "esphome/components/binary_sensor/binary_sensor.h"
 #include "esphome/components/text_sensor/text_sensor.h"
 #include "esphome/components/sensor/sensor.h"
-#ifdef USE_GECKO_SPA_QUIET_TIME
+#if defined(USE_GECKO_SPA_QUIET_TIME) || defined(USE_GECKO_SPA_CLOCK_SYNC)
 #include "esphome/components/time/real_time_clock.h"
 #endif
 
@@ -111,6 +111,7 @@ class GeckoSpa : public Component {
   void set_waterfall_sensor(binary_sensor::BinarySensor *bs) { waterfall_sensor_ = bs; }
   void set_blower_sensor(binary_sensor::BinarySensor *bs) { blower_sensor_ = bs; }
   void set_program_select(select::Select *sel) { program_select_ = sel; }
+  void set_lock_select(select::Select *sel) { lock_select_ = sel; }
   void set_standby_sensor(binary_sensor::BinarySensor *bs) {
     standby_sensor_ = bs;
     bs->publish_state(standby_state_);
@@ -151,6 +152,17 @@ class GeckoSpa : public Component {
     quiet_configured_ = true;
   }
 #endif
+  // Clock sync: set the spa's clock from an ESPHome time source. With the
+  // in.touch gone nothing else sets it, and the pack's own filter and
+  // economy schedules run on it.
+#ifdef USE_GECKO_SPA_CLOCK_SYNC
+  void set_clock_sync(time::RealTimeClock *clock, uint32_t max_drift_s) {
+    sync_clock_ = clock;
+    clock_max_drift_s_ = max_drift_s;
+  }
+  // Send the time source's current time to the spa now.
+  void sync_clock();
+#endif
   void set_quiet_time_sensor(binary_sensor::BinarySensor *bs) {
     quiet_time_sensor_ = bs;
     bs->publish_state(quiet_wanted_);
@@ -184,6 +196,8 @@ class GeckoSpa : public Component {
   void send_pump4_command(uint8_t state);  // Experimental: func ID 0x06
   void send_program_command(uint8_t prog);
   void send_temperature_command(float temp_c);
+  // Keypad lock: 0 = unlocked, 1 = partial, 2 = full (geckolib LockMode)
+  void send_lock_command(uint8_t mode);
   void request_status();
   // Force the link back up: resets the Arduino proxy, or reinitialises the I2C
   // peripheral when talking to the spa directly.
@@ -215,6 +229,7 @@ class GeckoSpa : public Component {
   binary_sensor::BinarySensor *waterfall_sensor_{nullptr};
   binary_sensor::BinarySensor *blower_sensor_{nullptr};
   select::Select *program_select_{nullptr};
+  select::Select *lock_select_{nullptr};
   binary_sensor::BinarySensor *standby_sensor_{nullptr};
   binary_sensor::BinarySensor *connected_sensor_{nullptr};
   climate::Climate *climate_{nullptr};
@@ -245,6 +260,16 @@ class GeckoSpa : public Component {
   binary_sensor::BinarySensor *quiet_time_sensor_{nullptr};
 #ifdef USE_GECKO_SPA_QUIET_TIME
   time::RealTimeClock *quiet_clock_{nullptr};
+#endif
+#ifdef USE_GECKO_SPA_CLOCK_SYNC
+  time::RealTimeClock *sync_clock_{nullptr};
+  uint32_t clock_max_drift_s_{120};
+  uint32_t last_clock_sync_{0};
+  bool clock_synced_once_{false};
+  static constexpr uint32_t CLOCK_RESYNC_MS = 24UL * 60 * 60 * 1000;  // Re-sync at least daily
+  static constexpr uint32_t CLOCK_MIN_GAP_MS = 10UL * 60 * 1000;      // Never more often than this
+  void check_clock_drift_(uint8_t hour, uint8_t minute, uint8_t second);
+  void update_clock_sync_();
 #endif
   bool quiet_configured_{false};
   uint16_t quiet_start_{0};
@@ -395,6 +420,16 @@ class GeckoSpaSelect : public Component, public select::Select {
   GeckoSpa *parent_{nullptr};
   ESPPreferenceObject pref_;
   uint8_t saved_index_{0xFF};
+};
+
+// Keypad lock (UNLOCK / PARTIAL / FULL). State comes from the spa's status.
+class GeckoSpaLockSelect : public Component, public select::Select {
+ public:
+  void set_parent(GeckoSpa *parent) { parent_ = parent; }
+  void control(const std::string &value) override;
+
+ protected:
+  GeckoSpa *parent_{nullptr};
 };
 
 }  // namespace gecko_spa

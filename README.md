@@ -3,6 +3,30 @@
 
 Home Assistant integration for Gecko spa systems. The ESP32 drives the spa's 5V I2C bus directly through a bidirectional logic level converter - no Arduino in the middle. The reference build uses a Seeed Studio XIAO ESP32-C3. Tested together with a Gecko IN.YE-3-H3.0 (YE-3-CE) spa controller. Feel free to combine with my home assistant integration for smart heating based on electricty price [Smart Spa Heating Integration](https://github.com/zteifel/smart-spa-heating).
 
+## In this fork (in.YE-5 support)
+
+This fork builds on kcembrey's `direct-i2c` branch and adds what an **in.YE-5-H3.0** (config 65 / status 66) needs once the in.touch 2 cloud module is retired:
+
+| Feature | What it does | Docs |
+|---|---|---|
+| Clock sync | Keeps the spa's clock set from SNTP or Home Assistant, which the in.touch used to do | [Clock sync](#clock-sync) |
+| Keypad lock | UNLOCK / PARTIAL / FULL as a select in Home Assistant | [Keypad lock](#keypad-lock) |
+| ISO1540 isolation | Galvanic isolation between ESP32 and spa bus instead of a BSS138 level converter | [in.YE-5 with an ISO1540 isolator](#inye-5-with-an-iso1540-isolator) |
+| WT32-ETH01 | Wired Ethernet instead of Wi-Fi | [WT32-ETH01 with ATV32 drives](#wt32-eth01-with-atv32-drives-on-the-pumps) |
+| Pump drives | Altivar 32 / 320 frequency drives over Modbus RTU for soft start and speed control (three-phase motors only) | [WT32-ETH01 with ATV32 drives](#wt32-eth01-with-atv32-drives-on-the-pumps) |
+| Carrier board | KiCad PCB: WT32-ETH01, ISO1540, RS485, CO-port header | [`hardware/`](hardware/) |
+
+Ready-made configs:
+
+| File | Board | Network | Extras |
+|---|---|---|---|
+| [`esphome/spa-controller-in-ye-5-iso1540.yaml`](esphome/spa-controller-in-ye-5-iso1540.yaml) | ESP32 DevKit + ISO1540 | Wi-Fi | Clock sync, keypad lock |
+| [`esphome/spa-controller-wt32-eth01-atv32.yaml`](esphome/spa-controller-wt32-eth01-atv32.yaml) | WT32-ETH01 + ISO1540 + RS485 | Ethernet | Plus 3 pump drives via [`esphome/packages/atv32-pump.yaml`](esphome/packages/atv32-pump.yaml) |
+
+**ESPHome version:** the component is an external component and builds against whatever ESPHome you run. It has been checked with ESPHome 2026.10.2; direct I2C on ESP-IDF needs ESP-IDF 5.4 or newer. To get a clear error on an older install, add `min_version: 2026.10.0` under `esphome:`.
+
+On the in.YE-5 the commands use geckolib's SET_VALUE / KEY_PRESS payloads with the pack's own config/status versions, and the memory map matches geckolib's `inyt-cfg-65` / `inyt-log-66`. Status, setpoint, light and pumps 1-3 decode as on the in.YE-3; control from the ESP32 is still to be confirmed on a running in.YE-5.
+
 ## Architecture
 
 ```
@@ -197,6 +221,8 @@ After installation, you'll have these entities:
 | Spa Pump 1 | Switch | Control main pump |
 | Spa Circulation | Switch | Control circulation pump |
 | Spa Program | Select | Choose program (Away, Standard, Energy, Super Energy, Weekend) |
+| Spa Keypad Lock | Select | UNLOCK / PARTIAL / FULL (`type: lock`) |
+| Set Spa Clock | Button | `id(spa).sync_clock()` - with `clock_sync` configured |
 | Spa Standby | Binary Sensor | Standby mode status |
 | Spa Connected | Binary Sensor | Connection status to spa |
 | Spa Time | Text Sensor | Spa's internal clock (DD/MM HH:MM:SS) |
@@ -296,6 +322,8 @@ Direct I2C works on any ESP32, with either framework. These example configs comp
 
 - [`esphome/spa-controller-feather-s2.yaml`](esphome/spa-controller-feather-s2.yaml) - Adafruit Feather ESP32-S2 on GPIO3/GPIO4 (the pins labelled SDA/SCL). That board gates power to its on-board I2C pull-ups behind GPIO7, which the config drives high on boot.
 - [`esphome/spa-controller-olimex.yaml`](esphome/spa-controller-olimex.yaml) - Olimex ESP32-POE-ISO on GPIO13/GPIO14. See [the Olimex guide](docs/olimex-poe-setup.md).
+- [`esphome/spa-controller-in-ye-5-iso1540.yaml`](esphome/spa-controller-in-ye-5-iso1540.yaml) - ESP32 DevKit on GPIO21/GPIO22 behind an ISO1540 isolator. See [in.YE-5 with an ISO1540 isolator](#inye-5-with-an-iso1540-isolator).
+- [`esphome/spa-controller-wt32-eth01-atv32.yaml`](esphome/spa-controller-wt32-eth01-atv32.yaml) - WT32-ETH01 on IO4/IO32 behind an ISO1540, with RS485 for pump drives. See [WT32-ETH01 with ATV32 drives](#wt32-eth01-with-atv32-drives-on-the-pumps) and the carrier board in [`hardware/`](hardware/).
 
 ---
 
@@ -314,6 +342,7 @@ Direct I2C works on any ESP32, with either framework. These example configs comp
 | `min_temperature` | `26°C` | Lowest setpoint Home Assistant will offer and send, down to `10°C` |
 | `max_temperature` | `40°C` | Highest setpoint Home Assistant will offer and send, up to `41.1°C` (106 °F). Gecko panels only go above 40 °C by holding the up key |
 | `quiet_time` | - | Hold the pumps off every night - see [Quiet time](#quiet-time) |
+| `clock_sync` | - | Keep the spa's clock set from an ESPHome time source - see [Clock sync](#clock-sync) |
 | `uart_id` | - | Legacy Arduino proxy mode. Mutually exclusive with `sda`/`scl` |
 | `reset_pin` | - | Legacy Arduino proxy mode only - the GPIO wired to the Arduino's RST pin |
 
@@ -337,6 +366,8 @@ The `Transport:` line in the boot log says which one is running. On a XIAO ESP32
 | `id(spa).reset_arduino()` | Alias of `recover_link()`, kept so older configs keep working |
 | `id(spa).pause_quiet_time(120)` | Let the pumps run for the next 120 minutes even inside quiet time; `0` resumes quiet time now |
 | `id(spa).start_quiet_time(120)` | Start quiet time now, outside the window too, for the next 120 minutes (a run that reaches the window carries on into it); `0` goes back to the schedule |
+| `id(spa).sync_clock()` | Set the spa's clock from the `clock_sync` time source now |
+| `id(spa).send_lock_command(1)` | Keypad lock: `0` unlocked, `1` partial, `2` full |
 | `id(spa).hold_standby(15)` | Hold the spa in standby for the next 15 minutes, whatever the time; call again to extend, `0` releases - see [Standby hold](#standby-hold) |
 
 ### Quiet time
@@ -437,6 +468,82 @@ binary_sensor:
 ```
 
 These read fields that sit at the same positions in every inYT status version from 51 through 83.
+
+### Clock sync
+
+The in.touch sets the spa's clock whenever it connects. Without it the clock drifts, and the spa's own filter and economy schedules run on that clock. `clock_sync` takes over:
+
+```yaml
+time:
+  - platform: sntp          # or homeassistant
+    id: spa_clock
+    timezone: Europe/Berlin
+
+gecko_spa:
+  # ...
+  clock_sync:
+    time_id: spa_clock
+    max_drift: 2min         # default; minimum 10s
+```
+
+The spa reports its clock in the 'K' message during each handshake. If that is more than `max_drift` off the time source, the component sets it (at most once per 10 minutes), and it sets it once a day regardless. The command is `4B YY MM DD DoW HH MM SS` (day of week 0 = Sunday), taken from the LDWTH fork. The date byte order has not yet been checked against an in.touch capture on an in.YE-5, so check the `Spa Time` text sensor after the first sync.
+
+### Keypad lock
+
+```yaml
+select:
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: lock              # UNLOCK / PARTIAL / FULL
+    name: "Spa Keypad Lock"
+```
+
+Writes geckolib's `LockMode` (position 0x0136 on status v51+). The select follows the spa's status, so it snaps back if the spa ignores the change. `type: program` (the default) is the water-care program select.
+
+### in.YE-5 with an ISO1540 isolator
+
+[`esphome/spa-controller-in-ye-5-iso1540.yaml`](esphome/spa-controller-in-ye-5-iso1540.yaml) is a full config for an in.YE-5-H3.0 (config 65, status 66) on an ESP32 DevKit, isolated from the spa with an ISO1540 instead of a level converter. Wiring:
+
+| CO port pin | Signal | ISO1540 (side 2) |
+|---|---|---|
+| 8 | GND | GND2 |
+| 4 | 5V | VCC2 |
+| 3 | SDA | SDA2 |
+| 2 | SCL | SCL2 |
+| 6 | 12V | not used |
+
+ESP32 3V3/GND/GPIO21/GPIO22 go to VCC1/GND1/SDA1/SCL1, with 4.7k pull-ups to 3V3 on side 1 if the module has none. Use the ISO1540, not the ISO1541: the ISO1541's SCL is one-way, and the ESP32 drives SCL when it sends commands. Power the ESP32 from its own USB supply so nothing bridges the isolation.
+
+Notes from bus captures on this pack, where the in.touch 2 was the only other controller:
+
+- The I2C payloads are geckolib's SPACK payloads. KEY_PRESS (`39 kk`) and SET_VALUE (`46 cfg log pos16 data`) both appear, with positions matching geckolib's `inyt-cfg-65` / `inyt-log-66`.
+- The in.touch drove filtration and economy remotely (`FilterAccess`/`EconomyAccess` = REMOTE at 0x0106, starting runs with `RemoteFiltAction`/`RemoteEconAction`). Check the `Filtration` sensor after removing the in.touch to confirm filter runs still start.
+- Temperature units: position 0x0021, `00` = °F, `01` = °C.
+
+### WT32-ETH01 with ATV32 drives on the pumps
+
+[`esphome/spa-controller-wt32-eth01-atv32.yaml`](esphome/spa-controller-wt32-eth01-atv32.yaml) runs the same in.YE-5 setup on a WT32-ETH01 (wired Ethernet, LAN8720). It also drives the three pumps through Schneider Altivar 32 frequency drives over Modbus RTU, which gives them a soft start and stop and an adjustable speed. The wiring and drive settings are in the file header.
+
+| WT32-ETH01 | Goes to |
+|---|---|
+| IO4 / IO32 | ISO1540 SDA1 / SCL1 |
+| IO17 / IO5 / IO33 | RS485 transceiver DI / RO / DE+RE |
+
+Each pump comes from [`esphome/packages/atv32-pump.yaml`](esphome/packages/atv32-pump.yaml), included once per drive with its pump number and Modbus address. The spa pack stays in charge:
+
+- **Start:** when the pack switches a pump on (from the panel, Home Assistant, filtration or heating), the drive gets the speed from `Pumpe N Drehzahl` and starts on its ACC ramp.
+- **Stop:** when the pack switches the pump off, the drive stops on its dEC ramp.
+- **Resync:** a 10 s check repeats a lost start or stop.
+- **Fail-safe:** if the ESP32 stops talking, the drive's Modbus timeout (ttO) trips and the pump stops.
+- **Entities per pump:** output frequency, motor current, fault flag, last fault code, and a fault-reset button.
+
+Before wiring this up:
+
+- **Motors.** The ATV32 has a three-phase output. Many spa pumps (e.g. LX LP300, "PH1" on the plate) are single-phase capacitor motors, and those must not run on a drive. Their terminal box looks the same as a three-phase motor in Steinmetz connection, so measure: with mains and capacitor disconnected, three equal resistances between the terminal pairs mean a three-phase delta winding; one reading equal to the sum of the other two means single-phase.
+- **Drive size.** Pick the drive by the motor's current, not its kW. A three-phase motor that must stay in 230 V delta runs on a 400 V drive (ATV320...N4) with UnS = 230 V and FrS = 50 Hz, sized for the delta current (for 10 A, an ATV320U55N4C). Save the settings with SCS so a factory reset cannot put 400 V on the windings. If the plate says 230Δ/400Y and the box can be rebridged, star connection on an ATV320U30N4C with UnS = 400 V is cleaner.
+- **Power path.** Each drive needs permanent mains, with the motor on its output. The pack's pump relay no longer feeds the motor; never switch a drive's input or output with a relay to run the pump.
+- **RCD.** Drives leak DC fault current, so the spa circuit needs a type B (or F) 30 mA RCD. Have an electrician do the mains side.
+- **Registers.** The registers used are CMD 8501, LFR 8502, ETA 3201, RFR 3202, LCR 3204 and LFT 7121. Check them against the ATV32 communication parameters for your firmware. The ATV320, the ATV32's successor, uses the same registers.
 
 ---
 
@@ -879,6 +986,8 @@ All spa protocol logic (GO responses, command encoding, status parsing) runs on 
 ## TODO
 
 - Scheduling of economy intervals and filter cycles in programs (decoding of i2c protocol complete)
+- in.YE-5: confirm the clock-set date byte order against an in.touch reconnect capture
+- in.YE-5: confirm filtration still starts once the in.touch (the remote scheduler) is gone
 - Cleanup notifications fix
 
 

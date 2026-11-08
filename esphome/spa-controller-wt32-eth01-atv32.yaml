@@ -1,0 +1,231 @@
+# Gecko in.YE-5 (in.YE-5-H3.0, config 65 / status 66) on a WT32-ETH01
+# (ESP32 + LAN8720 Ethernet), isolated from the spa with an ISO1540, with
+# the three pumps run by Schneider ATV32 drives over Modbus RTU (MAX485).
+# Wired Ethernet only: ESPHome cannot run Wi-Fi and Ethernet together.
+#
+# CO port -> ISO1540 side 2: as in spa-controller-in-ye-5-iso1540.yaml
+#   (pin 8 GND -> GND2, pin 4 5V -> VCC2, pin 3 SDA -> SDA2, pin 2 SCL -> SCL2)
+#
+# WT32-ETH01 -> ISO1540 side 1:
+#   3V3    -> VCC1
+#   GND    -> GND1
+#   IO4    -> SDA1  (+ 4.7k pull-up to 3V3 if the module has none)
+#   IO32   -> SCL1  (pin "CFG"; + 4.7k pull-up to 3V3 if the module has none)
+#
+# WT32-ETH01 -> RS485 transceiver (3.3 V type, e.g. MAX3485 module; a 5 V
+# MAX485 module needs level shifting on RO):
+#   IO17 (TXD)     -> DI
+#   IO5  (RXD)     -> RO
+#   IO33 (485_EN)  -> DE + /RE
+#   3V3 / GND      -> VCC / GND
+# A/B in a line to the three ATV32 (RJ45 Modbus port: pin 4 D1 = B/+,
+# pin 5 D0 = A/-, pin 8 common). 120 ohm termination at both ends.
+#
+# Pins taken by Ethernet on the WT32-ETH01, do not use: IO0, IO16, IO18,
+# IO19, IO21, IO22, IO23, IO25, IO26, IO27. IO2, IO12, IO15 are strapping
+# pins (IO12 high at boot breaks flash), so they are left alone too.
+#
+# Set on each ATV32 (menu COnF > FULL > COM- > Md1-, then CtL-):
+#   Add = 1 / 2 / 3, tbr = 19.2, tFO = 8E1, ttO = 10 s
+#   Fr1 = Mdb (speed from Modbus), CHCF = SIM, ACC / dEC = soft start/stop time
+
+substitutions:
+  device_name: spa-controller
+
+esphome:
+  name: ${device_name}
+  friendly_name: Whirlpool
+
+esp32:
+  board: wt32-eth01
+  framework:
+    type: esp-idf
+
+logger:
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+ethernet:
+  type: LAN8720
+  mdc_pin: GPIO23
+  mdio_pin: GPIO18
+  clk:
+    mode: CLK_EXT_IN
+    pin: 0
+  phy_addr: 1
+  power_pin: GPIO16
+
+# Time for clock sync and the reminder countdowns. SNTP works without Home
+# Assistant; swap for "platform: homeassistant" if you prefer.
+time:
+  - platform: sntp
+    id: spa_clock
+    timezone: Europe/Berlin
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+  # Or straight from GitHub:
+  # - source: github://AWSb24/esphome-gecko@in-ye-5-support
+  #   components: [gecko_spa]
+
+uart:
+  id: rs485_uart
+  tx_pin: GPIO17
+  rx_pin: GPIO5
+  baud_rate: 19200
+  parity: EVEN
+  stop_bits: 1
+
+modbus:
+  id: rs485
+  uart_id: rs485_uart
+  flow_control_pin: GPIO33
+
+# One package per pump and drive: speed setting, start/stop with the pack,
+# current, frequency, fault and fault reset.
+packages:
+  pump1: !include { file: packages/atv32-pump.yaml, vars: { n: 1, address: 1 } }
+  pump2: !include { file: packages/atv32-pump.yaml, vars: { n: 2, address: 2 } }
+  pump3: !include { file: packages/atv32-pump.yaml, vars: { n: 3, address: 3 } }
+
+gecko_spa:
+  id: spa
+  sda: GPIO4
+  scl: GPIO32
+  notif_date_format: Y-M-D  # Swap to D-M-Y if reminder dates look wrong
+  min_temperature: 15
+  max_temperature: 40
+  # With the in.touch gone nothing sets the spa's clock any more.
+  clock_sync:
+    time_id: spa_clock
+    max_drift: 2min
+
+climate:
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    name: "Whirlpool"
+
+switch:
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: light
+    name: "Licht"
+    icon: "mdi:lightbulb"
+
+  # Untested on the in.YE-5: remove if it does nothing
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: circulation
+    name: "Umwälzpumpe"
+    icon: "mdi:rotate-3d-variant"
+
+select:
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: lock
+    name: "Tastensperre"
+
+binary_sensor:
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: connected
+    name: "Verbunden"
+    device_class: connectivity
+
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: standby
+    name: "Standby"
+
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: waterfall
+    name: "Wasserfall"
+    icon: "mdi:waterfall"
+
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: economy
+    name: "Sparmodus aktiv"
+
+sensor:
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: pump_timer
+    name: "Pumpen-Timer"
+
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: filter_time_left
+    name: "Filterlauf Restzeit"
+
+
+text_sensor:
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: spa_time
+    name: "Uhrzeit Spa"
+
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: filtration
+    name: "Filtration"
+
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: rinse_filter
+    name: "Filter spülen fällig"
+
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: clean_filter
+    name: "Filter reinigen fällig"
+
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: change_water
+    name: "Wasserwechsel fällig"
+
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: spa_checkup
+    name: "Spa Service fällig"
+
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: config_version
+    name: "Config-Version"
+
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: status_version
+    name: "Status-Version"
+
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: pack_type
+    name: "Pack-Typ"
+
+button:
+  - platform: template
+    name: "Status aktualisieren"
+    on_press:
+      - lambda: id(spa).request_status();
+
+  - platform: template
+    name: "Uhr jetzt stellen"
+    on_press:
+      - lambda: id(spa).sync_clock();
+
+  - platform: template
+    name: "Bus neu verbinden"
+    on_press:
+      - lambda: id(spa).recover_link();

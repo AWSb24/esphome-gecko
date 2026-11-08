@@ -1,0 +1,200 @@
+# One spa pump driven by a Schneider Altivar 32 (ATV32) over Modbus RTU.
+#
+# The spa pack stays in charge: whenever it switches pump ${n} on (from the
+# panel, Home Assistant, filtration or heating), the ATV32 starts on its own
+# acceleration ramp (ACC) and runs at the speed set in "Pumpe ${n} Drehzahl".
+# When the pack switches the pump off, the drive stops on its deceleration
+# ramp (dEC). The pack's own relay for this pump no longer feeds the motor.
+#
+# Include once per pump:
+#   packages:
+#     pump1: !include { file: packages/atv32-pump.yaml, vars: { n: 1, address: 1 } }
+#
+# Needs in the main config: a gecko_spa with id "spa" and a modbus with id
+# "rs485". Register numbers are from the ATV32 communication parameters list
+# (CMD 8501, LFR 8502, ETA 3201, RFR 3202, LCR 3204, LFT 7121) - check them
+# against your drive's firmware before first use.
+
+defaults:
+  min_hz: "25"
+  max_hz: "50"
+
+modbus_controller:
+  - id: atv${n}
+    address: ${address}
+    modbus_id: rs485
+    # Polling also keeps the drive's Modbus timeout (ttO, default 10 s) from
+    # tripping. If the ESP32 dies, the drive faults with SLF1 and stops.
+    update_interval: 2s
+
+script:
+  - id: atv${n}_start
+    mode: restart
+    then:
+      # LFR is not kept over a drive power cycle, so send it with every start
+      - number.set:
+          id: atv${n}_lfr
+          value: !lambda return id(pump${n}_hz).state;
+      # CiA402 sequence: Shutdown -> Switch on -> Enable operation
+      - number.set:
+          id: atv${n}_cmd
+          value: 6
+      - delay: 100ms
+      - number.set:
+          id: atv${n}_cmd
+          value: 7
+      - delay: 100ms
+      - number.set:
+          id: atv${n}_cmd
+          value: 15
+  - id: atv${n}_stop
+    mode: restart
+    then:
+      # Disable operation: stop on the dEC ramp
+      - number.set:
+          id: atv${n}_cmd
+          value: 7
+
+switch:
+  - platform: gecko_spa
+    gecko_spa_id: spa
+    type: pump${n}
+    id: pump${n}
+    name: "Pumpe ${n}"
+    icon: "mdi:pump"
+    on_turn_on:
+      - script.execute: atv${n}_start
+    on_turn_off:
+      - script.execute: atv${n}_stop
+
+number:
+  # Speed you want, kept over reboots. Applies on the next start, or right
+  # away while the pump runs.
+  - platform: template
+    id: pump${n}_hz
+    name: "Pumpe ${n} Drehzahl"
+    unit_of_measurement: Hz
+    icon: "mdi:speedometer"
+    min_value: ${min_hz}
+    max_value: ${max_hz}
+    step: 1
+    initial_value: ${max_hz}
+    restore_value: true
+    optimistic: true
+    on_value:
+      - if:
+          condition:
+            switch.is_on: pump${n}
+          then:
+            - number.set:
+                id: atv${n}_lfr
+                value: !lambda return x;
+
+  - platform: modbus_controller
+    modbus_controller_id: atv${n}
+    id: atv${n}_lfr
+    internal: true
+    address: 8502  # LFR: frequency reference, 0.1 Hz
+    value_type: S_WORD
+    multiply: 10
+    min_value: 0
+    max_value: ${max_hz}
+
+  - platform: modbus_controller
+    modbus_controller_id: atv${n}
+    id: atv${n}_cmd
+    internal: true
+    address: 8501  # CMD: CiA402 control word
+    value_type: U_WORD
+    min_value: 0
+    max_value: 65535
+
+sensor:
+  - platform: modbus_controller
+    modbus_controller_id: atv${n}
+    id: atv${n}_eta
+    name: "Pumpe ${n} FU Statuswort"
+    address: 3201  # ETA: CiA402 status word
+    register_type: holding
+    value_type: U_WORD
+    entity_category: diagnostic
+    accuracy_decimals: 0
+
+  - platform: modbus_controller
+    modbus_controller_id: atv${n}
+    name: "Pumpe ${n} Frequenz"
+    address: 3202  # RFR: output frequency, 0.1 Hz
+    register_type: holding
+    value_type: S_WORD
+    unit_of_measurement: Hz
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+
+  - platform: modbus_controller
+    modbus_controller_id: atv${n}
+    name: "Pumpe ${n} Motorstrom"
+    address: 3204  # LCR: motor current, 0.1 A
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: A
+    device_class: current
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+
+  - platform: modbus_controller
+    modbus_controller_id: atv${n}
+    name: "Pumpe ${n} letzter Fehler"
+    address: 7121  # LFT: last fault code (0 = none)
+    register_type: holding
+    value_type: U_WORD
+    entity_category: diagnostic
+    accuracy_decimals: 0
+
+binary_sensor:
+  - platform: modbus_controller
+    modbus_controller_id: atv${n}
+    name: "Pumpe ${n} FU Störung"
+    address: 3201  # ETA bit 3: fault
+    register_type: holding
+    bitmask: 0x0008
+    device_class: problem
+
+button:
+  - platform: template
+    name: "Pumpe ${n} FU Störung quittieren"
+    icon: "mdi:restart-alert"
+    on_press:
+      - number.set:  # Fault reset
+          id: atv${n}_cmd
+          value: 0x80
+      - delay: 200ms
+      - number.set:
+          id: atv${n}_cmd
+          value: 0
+      - delay: 200ms
+      - if:
+          condition:
+            switch.is_on: pump${n}
+          then:
+            - script.execute: atv${n}_start
+
+# Keep drive and pack in step: if a start or stop got lost (drive was off,
+# bus error, ESP32 reboot), repeat it.
+interval:
+  - interval: 10s
+    then:
+      - lambda: |-
+          if (!id(atv${n}_eta).has_state()) return;
+          uint16_t eta = (uint16_t) id(atv${n}_eta).state;
+          bool enabled = (eta & 0x006F) == 0x0027;  // Operation enabled
+          bool fault = eta & 0x0008;
+          if (fault) return;  // Needs a reset first
+          if (id(pump${n}).state && !enabled) {
+            ESP_LOGW("atv32", "Pump ${n}: pack says on, drive not running - starting");
+            id(atv${n}_start).execute();
+          } else if (!id(pump${n}).state && enabled) {
+            ESP_LOGW("atv32", "Pump ${n}: pack says off, drive running - stopping");
+            id(atv${n}_stop).execute();
+          }
