@@ -3,6 +3,30 @@
 
 Home Assistant integration for Gecko spa systems. The ESP32 drives the spa's 5V I2C bus directly through a bidirectional logic level converter - no Arduino in the middle. The reference build uses a Seeed Studio XIAO ESP32-C3. Tested together with a Gecko IN.YE-3-H3.0 (YE-3-CE) spa controller. Feel free to combine with my home assistant integration for smart heating based on electricty price [Smart Spa Heating Integration](https://github.com/zteifel/smart-spa-heating).
 
+## In this fork (in.YE-5 support)
+
+This fork builds on kcembrey's `direct-i2c` branch and adds what an **in.YE-5-H3.0** (config 65 / status 66) needs once the in.touch 2 cloud module is retired:
+
+| Feature | What it does | Docs |
+|---|---|---|
+| Clock sync | Keeps the spa's clock set from SNTP or Home Assistant, which the in.touch used to do | [Clock sync](#clock-sync) |
+| Keypad lock | UNLOCK / PARTIAL / FULL as a select in Home Assistant | [Keypad lock](#keypad-lock) |
+| ISO1540 isolation | Galvanic isolation between ESP32 and spa bus instead of a BSS138 level converter | [in.YE-5 with an ISO1540 isolator](#inye-5-with-an-iso1540-isolator) |
+| WT32-ETH01 | Wired Ethernet instead of Wi-Fi | [WT32-ETH01 with ATV32 drives](#wt32-eth01-with-atv32-drives-on-the-pumps) |
+| Pump drives | Altivar 32 / 320 frequency drives over Modbus RTU for soft start and speed control (three-phase motors only) | [WT32-ETH01 with ATV32 drives](#wt32-eth01-with-atv32-drives-on-the-pumps) |
+| Carrier board | KiCad PCB: WT32-ETH01, ISO1540, RS485, CO-port header | [`hardware/`](hardware/) |
+
+Ready-made configs:
+
+| File | Board | Network | Extras |
+|---|---|---|---|
+| [`esphome/spa-controller-in-ye-5-iso1540.yaml`](esphome/spa-controller-in-ye-5-iso1540.yaml) | ESP32 DevKit + ISO1540 | Wi-Fi | Clock sync, keypad lock |
+| [`esphome/spa-controller-wt32-eth01-atv32.yaml`](esphome/spa-controller-wt32-eth01-atv32.yaml) | WT32-ETH01 + ISO1540 + RS485 | Ethernet | Plus 3 pump drives via [`esphome/packages/atv32-pump.yaml`](esphome/packages/atv32-pump.yaml) |
+
+**ESPHome version:** the component is an external component and builds against whatever ESPHome you run. It has been checked with ESPHome 2026.10.2; direct I2C on ESP-IDF needs ESP-IDF 5.4 or newer. To get a clear error on an older install, add `min_version: 2026.10.0` under `esphome:`.
+
+On the in.YE-5 the commands use geckolib's SET_VALUE / KEY_PRESS payloads with the pack's own config/status versions, and the memory map matches geckolib's `inyt-cfg-65` / `inyt-log-66`. Status, setpoint, light and pumps 1-3 decode as on the in.YE-3; control from the ESP32 is still to be confirmed on a running in.YE-5.
+
 ## Architecture
 
 ```
@@ -197,6 +221,8 @@ After installation, you'll have these entities:
 | Spa Pump 1 | Switch | Control main pump |
 | Spa Circulation | Switch | Control circulation pump |
 | Spa Program | Select | Choose program (Away, Standard, Energy, Super Energy, Weekend) |
+| Spa Keypad Lock | Select | UNLOCK / PARTIAL / FULL (`type: lock`) |
+| Set Spa Clock | Button | `id(spa).sync_clock()` - with `clock_sync` configured |
 | Spa Standby | Binary Sensor | Standby mode status |
 | Spa Connected | Binary Sensor | Connection status to spa |
 | Spa Time | Text Sensor | Spa's internal clock (DD/MM HH:MM:SS) |
@@ -296,6 +322,8 @@ Direct I2C works on any ESP32, with either framework. These example configs comp
 
 - [`esphome/spa-controller-feather-s2.yaml`](esphome/spa-controller-feather-s2.yaml) - Adafruit Feather ESP32-S2 on GPIO3/GPIO4 (the pins labelled SDA/SCL). That board gates power to its on-board I2C pull-ups behind GPIO7, which the config drives high on boot.
 - [`esphome/spa-controller-olimex.yaml`](esphome/spa-controller-olimex.yaml) - Olimex ESP32-POE-ISO on GPIO13/GPIO14. See [the Olimex guide](docs/olimex-poe-setup.md).
+- [`esphome/spa-controller-in-ye-5-iso1540.yaml`](esphome/spa-controller-in-ye-5-iso1540.yaml) - ESP32 DevKit on GPIO21/GPIO22 behind an ISO1540 isolator. See [in.YE-5 with an ISO1540 isolator](#inye-5-with-an-iso1540-isolator).
+- [`esphome/spa-controller-wt32-eth01-atv32.yaml`](esphome/spa-controller-wt32-eth01-atv32.yaml) - WT32-ETH01 on IO4/IO32 behind an ISO1540, with RS485 for pump drives. See [WT32-ETH01 with ATV32 drives](#wt32-eth01-with-atv32-drives-on-the-pumps) and the carrier board in [`hardware/`](hardware/).
 
 ---
 
@@ -511,10 +539,11 @@ Each pump comes from [`esphome/packages/atv32-pump.yaml`](esphome/packages/atv32
 
 Before wiring this up:
 
-- **Motors.** The ATV32 has a three-phase output. Most spa pumps have single-phase capacitor motors, and those must not run on a drive. Use three-phase motors (230 V delta for a single-phase-input ATV32 ...M2).
+- **Motors.** The ATV32 has a three-phase output. Many spa pumps (e.g. LX LP300, "PH1" on the plate) are single-phase capacitor motors, and those must not run on a drive. Their terminal box looks the same as a three-phase motor in Steinmetz connection, so measure: with mains and capacitor disconnected, three equal resistances between the terminal pairs mean a three-phase delta winding; one reading equal to the sum of the other two means single-phase.
+- **Drive size.** Pick the drive by the motor's current, not its kW. A three-phase motor that must stay in 230 V delta runs on a 400 V drive (ATV320...N4) with UnS = 230 V and FrS = 50 Hz, sized for the delta current (for 10 A, an ATV320U55N4C). Save the settings with SCS so a factory reset cannot put 400 V on the windings. If the plate says 230Δ/400Y and the box can be rebridged, star connection on an ATV320U30N4C with UnS = 400 V is cleaner.
 - **Power path.** Each drive needs permanent mains, with the motor on its output. The pack's pump relay no longer feeds the motor; never switch a drive's input or output with a relay to run the pump.
 - **RCD.** Drives leak DC fault current, so the spa circuit needs a type B (or F) 30 mA RCD. Have an electrician do the mains side.
-- **Registers.** The registers used are CMD 8501, LFR 8502, ETA 3201, RFR 3202, LCR 3204 and LFT 7121. Check them against the ATV32 communication parameters for your firmware.
+- **Registers.** The registers used are CMD 8501, LFR 8502, ETA 3201, RFR 3202, LCR 3204 and LFT 7121. Check them against the ATV32 communication parameters for your firmware. The ATV320, the ATV32's successor, uses the same registers.
 
 ---
 
@@ -957,6 +986,8 @@ All spa protocol logic (GO responses, command encoding, status parsing) runs on 
 ## TODO
 
 - Scheduling of economy intervals and filter cycles in programs (decoding of i2c protocol complete)
+- in.YE-5: confirm the clock-set date byte order against an in.touch reconnect capture
+- in.YE-5: confirm filtration still starts once the in.touch (the remote scheduler) is gone
 - Cleanup notifications fix
 
 

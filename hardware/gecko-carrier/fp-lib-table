@@ -1,0 +1,3 @@
+(fp_lib_table
+  (lib (name "gecko_carrier")(type "KiCad")(uri "${KIPRJMOD}/gecko_carrier.pretty")(options "")(descr "Gecko carrier footprints"))
+)
