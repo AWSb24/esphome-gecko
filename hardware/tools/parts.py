@@ -129,6 +129,11 @@ PLACEMENT = {
 BOARD_W = 120.0
 BOARD_H = 80.0
 
+# Notch under the WT32-ETH01's RJ45 jack. The jack body sticks out below the
+# module further than the short header pins at that end (LINK, GND), so the
+# module only sits flat if the carrier is cut away there. Open to the bottom edge.
+RJ45_NOTCH = (70.4, 64.4, 89.6, BOARD_H)  # x0, y0, x1, y1
+
 NETCLASSES = {
     "Mains": dict(clearance=2.0, width=1.0, nets=["L_IN", "L_F", "N"]),
     "Power": dict(clearance=0.25, width=0.6, nets=["+5V", "+3V3", "GND", "SPA_5V", "GND_SPA"]),

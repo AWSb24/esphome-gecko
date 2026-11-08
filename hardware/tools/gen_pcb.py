@@ -12,7 +12,7 @@ import uuid
 import pcbnew
 
 sys.path.insert(0, os.path.dirname(__file__))
-from parts import BOARD_H, BOARD_W, LIB, NETCLASSES, PARTS, PLACEMENT  # noqa: E402
+from parts import BOARD_H, BOARD_W, LIB, NETCLASSES, PARTS, PLACEMENT, RJ45_NOTCH  # noqa: E402
 from gen_sch import uid  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -167,8 +167,18 @@ def build():
         if "DNP" in value:
             fp.SetAttributes(fp.GetAttributes() | pcbnew.FP_EXCLUDE_FROM_BOM | pcbnew.FP_EXCLUDE_FROM_POS_FILES)
 
-    # Outline with rounded corners kept simple: plain rectangle
-    rect_edge(board, 0, 0, BOARD_W, BOARD_H)
+    # Outline: rectangle with the RJ45 notch in the bottom edge
+    nx0, ny0, nx1, ny1 = RJ45_NOTCH
+    outline = [(0, 0), (BOARD_W, 0), (BOARD_W, BOARD_H), (nx1, BOARD_H), (nx1, ny0),
+               (nx0, ny0), (nx0, BOARD_H), (0, BOARD_H), (0, 0)]
+    for a, b in zip(outline, outline[1:]):
+        seg = pcbnew.PCB_SHAPE(board)
+        seg.SetShape(pcbnew.SHAPE_T_SEGMENT)
+        seg.SetStart(pt(*a))
+        seg.SetEnd(pt(*b))
+        seg.SetLayer(pcbnew.Edge_Cuts)
+        seg.SetWidth(mm(0.1))
+        board.Add(seg)
     # Milled slot between mains and SELV under the HLK module
     rect_edge(board, 33, 38.5, 35, 59.5)
 
@@ -194,7 +204,8 @@ def build():
     text(board, "Modbus D1+ D0- 0V", 49, 12.5, 1.0)
     text(board, "TERM", 64, 15, 0.9)
     text(board, "PROG GND TX RX IO0 EN", 108.5, 52, 0.9, angle=90)
-    text(board, "gecko-carrier v0.1  esphome-gecko", 78, 2.2, 1.0)
+    text(board, "RJ45", 80, 62.6, 1.0)
+    text(board, "gecko-carrier v0.2  esphome-gecko", 78, 2.2, 1.0)
 
     path = os.path.join(OUT, "gecko-carrier.kicad_pcb")
     board.Save(path)

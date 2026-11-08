@@ -16,7 +16,7 @@ import numpy as np
 import pcbnew
 
 sys.path.insert(0, os.path.dirname(__file__))
-from parts import BOARD_H, BOARD_W, NETCLASSES  # noqa: E402
+from parts import BOARD_H, BOARD_W, NETCLASSES, RJ45_NOTCH  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PCB = os.path.join(HERE, "..", "gecko-carrier", "gecko-carrier.kicad_pcb")
@@ -97,6 +97,8 @@ class Router:
         e[0, :] = e[-1, :] = True
         # milled slot
         e |= self._rect(33, 38.5, 35, 59.5)
+        # RJ45 notch
+        e |= self._rect(*RJ45_NOTCH)
         self.edge = e
 
     def _init_keepouts(self):
